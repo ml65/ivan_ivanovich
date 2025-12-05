@@ -1,118 +1,225 @@
 <?php
 
-function indexToOffset(int $z): int
+/**
+ * Конфигурация параметров работы Ивана Ивановича
+ */
+final class IvanConstants
 {
-    $z = $z % 24;
-    if ($z < 0) {
-        $z += 24;
-    }
-    return $z <= 12 ? $z : $z - 24;
+    public const int TIMEZONES_COUNT = 24;
+    public const int BASE_YEAR = 2020;
+    public const int FIRST_DEPARTURE_HOUR = 12;
+    public const int CYCLE_DURATION_HOURS = 8; // 2 часа полет + 6 часов отдых
+    public const int FLIGHT_DURATION_HOURS = 2;
+    public const int REST_DURATION_HOURS = 6;
+    public const int TIMEZONE_SHIFT_ON_FLIGHT = 3;
+    public const int DAYS_IN_YEAR = 365;
+    
+    // Коэффициенты для расчета високосных лет
+    public const int LEAP_YEAR_DIVISOR_4 = 4;
+    public const int LEAP_YEAR_DIVISOR_100 = 100;
+    public const int LEAP_YEAR_DIVISOR_400 = 400;
+    
+    // Состояния
+    public const string STATE_REST = 'rest';
+    public const string STATE_FLIGHT = 'flight';
 }
 
-// t в часах от 01.01.2020 00:00 по Москве
-function getZoneAndState(float $t): array
+/**
+ * Нормализует число по модулю (приводит к диапазону [0, modulus))
+ * 
+ * @param int $value Значение для нормализации
+ * @param int $modulus Модуль
+ * @return int Нормализованное значение
+ */
+function normalizeModulo(int $value, int $modulus): int
 {
-    if ($t < 12) {
-        return [0, 'rest']; // до первого вылета в Москве
+    $result = $value % $modulus;
+    if ($result < 0) {
+        $result += $modulus;
     }
-    $tau   = $t - 12;             // часы с момента первого вылета
-    $k     = intdiv((int)$tau, 8); // номер цикла (0,1,2,...)
-    $phase = $tau % 8;            // фаза в цикле [0..7]
+    return $result;
+}
 
-    if ($phase < 2) {
-        // полёт, вылет из пояса z_dep
-        $z_dep = (-3 * $k) % 24;
-        if ($z_dep < 0) {
-            $z_dep += 24;
-        }
-        return [$z_dep, 'flight'];
+/**
+ * Преобразует индекс часового пояса (0-23) в смещение от Москвы в часах (-12..12)
+ * 
+ * @param int $timezoneIndex Индекс часового пояса (0 = Москва)
+ * @return int Смещение в часах от Москвы
+ */
+function convertTimezoneIndexToOffset(int $timezoneIndex): int
+{
+    $normalizedIndex = normalizeModulo($timezoneIndex, IvanConstants::TIMEZONES_COUNT);
+    
+    // Преобразование: 0-12 -> 0-12, 13-23 -> -11..-1
+    return $normalizedIndex <= 12 
+        ? $normalizedIndex 
+        : $normalizedIndex - IvanConstants::TIMEZONES_COUNT;
+}
+
+/**
+ * Определяет часовой пояс и состояние Ивана Ивановича в заданный момент времени
+ * 
+ * @param float $hoursFromBase Время в часах от 01.01.2020 00:00 по Москве
+ * @return array{0: int, 1: string} Массив [индекс_часового_пояса, состояние]
+ */
+function getTimezoneAndStateAtTime(float $hoursFromBase): array
+{
+    if ($hoursFromBase < IvanConstants::FIRST_DEPARTURE_HOUR) {
+        return [0, IvanConstants::STATE_REST]; // До первого вылета в Москве
+    }
+    
+    $hoursSinceFirstDeparture = $hoursFromBase - IvanConstants::FIRST_DEPARTURE_HOUR;
+    $cycleNumber = intdiv((int)$hoursSinceFirstDeparture, IvanConstants::CYCLE_DURATION_HOURS);
+    $phaseInCycle = $hoursSinceFirstDeparture % IvanConstants::CYCLE_DURATION_HOURS;
+    
+    if ($phaseInCycle < IvanConstants::FLIGHT_DURATION_HOURS) {
+        // Полёт, вылет из пояса departure_timezone
+        $departureTimezone = normalizeModulo(
+            -IvanConstants::TIMEZONE_SHIFT_ON_FLIGHT * $cycleNumber,
+            IvanConstants::TIMEZONES_COUNT
+        );
+        return [$departureTimezone, IvanConstants::STATE_FLIGHT];
     } else {
-        // отдых в поясе z_arr = z_dep - 3
-        $z_arr = (-3 * ($k + 1)) % 24;
-        if ($z_arr < 0) {
-            $z_arr += 24;
-        }
-        return [$z_arr, 'rest'];
+        // Отдых в поясе arrival_timezone = departure_timezone - 3
+        $arrivalTimezone = normalizeModulo(
+            -IvanConstants::TIMEZONE_SHIFT_ON_FLIGHT * ($cycleNumber + 1),
+            IvanConstants::TIMEZONES_COUNT
+        );
+        return [$arrivalTimezone, IvanConstants::STATE_REST];
     }
 }
 
-
-function leapsUpto(int $n): int
+/**
+ * Вычисляет количество високосных лет до указанного года (не включая)
+ * 
+ * @param int $year Год
+ * @return int Количество високосных лет
+ */
+function countLeapYearsUpTo(int $year): int
 {
-    return intdiv($n, 4) - intdiv($n, 100) + intdiv($n, 400);
+    return intdiv($year, IvanConstants::LEAP_YEAR_DIVISOR_4)
+         - intdiv($year, IvanConstants::LEAP_YEAR_DIVISOR_100)
+         + intdiv($year, IvanConstants::LEAP_YEAR_DIVISOR_400);
 }
 
-function daysFrom2020ToYearStart(int $year): int
+/**
+ * Вычисляет количество дней от начала 2020 года до начала указанного года
+ * 
+ * @param int $year Год (>= 2020)
+ * @return int Количество дней
+ * @throws InvalidArgumentException Если год < 2020
+ */
+function calculateDaysFromBaseYearToYearStart(int $year): int
 {
-    if ($year < 2020) {
-        throw new InvalidArgumentException('year < 2020');
+    if ($year < IvanConstants::BASE_YEAR) {
+        throw new InvalidArgumentException(
+            sprintf('Год должен быть не меньше %d, получен: %d', IvanConstants::BASE_YEAR, $year)
+        );
     }
-    if ($year === 2020) {
+    
+    if ($year === IvanConstants::BASE_YEAR) {
         return 0;
     }
-    $dy = $year - 2020;
-    $L2019 = leapsUpto(2019);
-    $leaps = leapsUpto($year - 1) - $L2019; // число високосных лет в [2020..year-1]
-    return 365 * $dy + $leaps;
+    
+    $yearsDifference = $year - IvanConstants::BASE_YEAR;
+    $leapYearsBefore2020 = countLeapYearsUpTo(IvanConstants::BASE_YEAR - 1);
+    $leapYearsInRange = countLeapYearsUpTo($year - 1) - $leapYearsBefore2020;
+    
+    return IvanConstants::DAYS_IN_YEAR * $yearsDifference + $leapYearsInRange;
 }
 
-
-function getMoscowNewYearTimeNoLoop(int $year): string
+/**
+ * Вычисляет время празднования, если Новый год застал в полете
+ * 
+ * @param float $newYearTime Время наступления Нового года
+ * @return float Время празднования
+ */
+function calculateCelebrationTimeDuringFlight(float $newYearTime): float
 {
-    if ($year < 2020) {
-        throw new InvalidArgumentException('year < 2020');
-    }
-    if ($year === 2020) {
-        return '00:00';
-    }
+    $hoursSinceFirstDeparture = $newYearTime - IvanConstants::FIRST_DEPARTURE_HOUR;
+    $cycleNumber = intdiv((int)$hoursSinceFirstDeparture, IvanConstants::CYCLE_DURATION_HOURS);
+    $flightStartTime = IvanConstants::FIRST_DEPARTURE_HOUR + IvanConstants::CYCLE_DURATION_HOURS * $cycleNumber;
+    
+    return $flightStartTime + IvanConstants::FLIGHT_DURATION_HOURS; // Время посадки
+}
 
-    $Hbase = daysFrom2020ToYearStart($year) * 24;
-    $best  = null;
-
-    for ($z = 0; $z < 24; $z++) {
-        $offset = indexToOffset($z);
-        $t0 = $Hbase - $offset; // момент, когда в поясе z наступает 01.01.Y 00:00
-
-        if ($t0 < 12) {
-            // до первого вылета — для Y > 2020 это не может случиться, но на всякий случай
-            continue;
+/**
+ * Находит лучшее время празднования среди всех часовых поясов
+ * 
+ * @param int $targetYear Целевой год
+ * @return float Время празднования в часах от базовой даты
+ * @throws RuntimeException Если не удалось найти момент празднования
+ */
+function findBestCelebrationTime(int $targetYear): float
+{
+    $baseHours = calculateDaysFromBaseYearToYearStart($targetYear) * IvanConstants::TIMEZONES_COUNT;
+    $bestTime = null;
+    
+    for ($timezoneIndex = 0; $timezoneIndex < IvanConstants::TIMEZONES_COUNT; $timezoneIndex++) {
+        $timezoneOffset = convertTimezoneIndexToOffset($timezoneIndex);
+        $newYearTimeInTimezone = $baseHours - $timezoneOffset;
+        
+        if ($newYearTimeInTimezone < IvanConstants::FIRST_DEPARTURE_HOUR) {
+            continue; // До первого вылета
         }
-
-        list($zoneAtT0, $stateAtT0) = getZoneAndState($t0);
-
-        if ($stateAtT0 === 'rest') {
-            if ($zoneAtT0 === $z) {
-                $tCelebrate = $t0;
-            } else {
-                continue;
-            }
-        } else { // flight
-            if ($zoneAtT0 !== $z) {
-                continue;
-            }
-            // Новый год застал его в полёте — празднует после посадки
-            $tau = $t0 - 12;
-            $k   = intdiv((int)$tau, 8);
-            $tStartFlight = 12 + 8 * $k;
-            $tCelebrate   = $tStartFlight + 2;
-        }
-
-        if ($best === null || $tCelebrate < $best) {
-            $best = $tCelebrate;
+        
+        [$zoneAtNewYear, $stateAtNewYear] = getTimezoneAndStateAtTime($newYearTimeInTimezone);
+        
+        $celebrationTime = match ($stateAtNewYear) {
+            IvanConstants::STATE_REST => $zoneAtNewYear === $timezoneIndex 
+                ? $newYearTimeInTimezone 
+                : null,
+            IvanConstants::STATE_FLIGHT => $zoneAtNewYear === $timezoneIndex
+                ? calculateCelebrationTimeDuringFlight($newYearTimeInTimezone)
+                : null,
+            default => throw new RuntimeException("Неизвестное состояние: $stateAtNewYear")
+        };
+        
+        if ($celebrationTime !== null && ($bestTime === null || $celebrationTime < $bestTime)) {
+            $bestTime = $celebrationTime;
         }
     }
-
-    if ($best === null) {
+    
+    if ($bestTime === null) {
         throw new RuntimeException('Не удалось найти момент празднования.');
     }
-
-    // Время в Москве — это просто best по модулю 24 часов
-    $h = $best % 24;
-    if ($h < 0) {
-        $h += 24;
-    }
-
-    // Формат "HH:MM"
-    return sprintf('%02d:00', $h);
+    
+    return $bestTime;
 }
 
+/**
+ * Форматирует время в формате "HH:MM"
+ * 
+ * @param float $hours Время в часах
+ * @return string Время в формате "HH:MM"
+ */
+function formatTimeAsHoursMinutes(float $hours): string
+{
+    $normalizedHours = normalizeModulo((int)$hours, IvanConstants::TIMEZONES_COUNT);
+    return sprintf('%02d:00', $normalizedHours);
+}
+
+/**
+ * Возвращает строку "HH:MM" — сколько в Москве будет времени,
+ * когда Иван Иванович отпразднует наступление заданного года.
+ *
+ * @param int $year Год >= 2020
+ * @return string Часы и минуты в Москве в формате "HH:MM"
+ * @throws InvalidArgumentException Если год < 2020
+ * @throws RuntimeException Если не удалось найти момент празднования
+ */
+function getMoscowNewYearTimeNoLoop(int $year): string
+{
+    if ($year < IvanConstants::BASE_YEAR) {
+        throw new InvalidArgumentException(
+            sprintf('Год должен быть не меньше %d, получен: %d', IvanConstants::BASE_YEAR, $year)
+        );
+    }
+    
+    if ($year === IvanConstants::BASE_YEAR) {
+        return '00:00';
+    }
+    
+    $bestCelebrationTime = findBestCelebrationTime($year);
+    return formatTimeAsHoursMinutes($bestCelebrationTime);
+}
