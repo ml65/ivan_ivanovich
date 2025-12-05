@@ -1,0 +1,8 @@
+# Исключаем папку vendor из solid вариантов проекта
+var1/solid/vendor/
+var2/solid/vendor/
+
+# Кэш PHPUnit
+**/.phpunit.cache/
+*.phpunit.result.cache
+
